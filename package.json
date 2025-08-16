@@ -1,0 +1,65 @@
+{
+  "name": "deep-code-reviewer",
+  "displayName": "deep-code-reviewer",
+  "description": "Your AI-assisted code review partner inside VS Code.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.102.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:deep-code-reviewer.setOpenAIKey",
+    "onCommand:deep-code-reviewer.reviewCode"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+
+    "commands": [
+    { "command": "deep-code-reviewer.setOpenAIKey", "title": "Deep Code Reviewer: Set OpenAI API Key" },
+    { "command": "deep-code-reviewer.reviewCode", "title": "Deep Code Reviewer: Review Current File" }
+    ],
+
+    "configuration": {
+      "title": "Deep Code Reviewer",
+      "properties": {
+        "deepCode.openaiModel": {
+          "type": "string",
+          "default": "gpt-5-nano",
+          "description": "OpenAI model name to use (e.g., gpt-4o-mini, gpt-5-nano)."
+        }
+      } 
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.102.0",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.25.8",
+    "eslint": "^9.32.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "openai": "^5.12.2"
+  }
+}
