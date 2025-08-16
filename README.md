@@ -1,6 +1,7 @@
 # deep-code-reviewer README
 
-This is the README for your extension "deep-code-reviewer". After writing up a brief description, we recommend including the following sections.
+Your AI-powered code review partner inside VS Code.  
+✨ Actively in developmen
 
 ## Features
 
