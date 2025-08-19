@@ -39,6 +39,25 @@ export function activate(context: vscode.ExtensionContext) {
 		await context.secrets.store('deepCode.openai.apiKey', key);
 		vscode.window.showInformationMessage('OpenAI API key saved securely.');
 	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('deep-code-reviewer.reviewCode', async () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			vscode.window.showErrorMessage('No active editor!');
+			return;
+		}
+
+		const apiKey = await context.secrets.get('deepCode.openai.apiKey');
+		if (!apiKey) {
+    		vscode.window.showErrorMessage('Please set your OpenAI API key first.');
+    		return;
+		}
+
+		const code = editor.document.getText();
+
+		vscode.window.showInformationMessage("Reviewing code with AI..")
+
+	}));	
 	
 	// some notes for the code above 
 	// async allows us to use await
