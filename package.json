@@ -17,8 +17,11 @@
   "contributes": {
 
     "commands": [
-    { "command": "deep-code-reviewer.setOpenAIKey", "title": "Deep Code Reviewer: Set OpenAI API Key" },
-    { "command": "deep-code-reviewer.reviewCode", "title": "Deep Code Reviewer: Review Current File" }
+    { "command": "deep-code-reviewer.setOpenAIKey", 
+      "title": "Deep Code Reviewer: Set OpenAI API Key" }, 
+
+    { "command": "deep-code-reviewer.reviewCode", 
+      "title": "Deep Code Reviewer: Review Current File" }
     ],
 
     "configuration": {

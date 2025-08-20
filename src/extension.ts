@@ -12,6 +12,8 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import OpenAI from 'openai';
+import { userInfo } from 'os';
+import { json } from 'stream/consumers';
 
 type ReviewIssue = {
   line: number; // remember number is 1-based
@@ -30,6 +32,9 @@ export function activate(context: vscode.ExtensionContext) {
 	const diagCollection = vscode.languages.createDiagnosticCollection('deep-code-review'); // creates a collection for all the review problems
 	context.subscriptions.push(diagCollection); // this line makes vs code clean it up when reloading/unloading
 
+	// This is the first command, here the user will set the API key
+
+	// The line below registers a command in the palette (opened by ctrl/command + shift + p)
 	context.subscriptions.push(vscode.commands.registerCommand('deep-code-reviewer.setOpenAIKey', async () => {
 		const key = await vscode.window.showInputBox({
 			prompt: 'Enter your OpenAI API key',
@@ -40,6 +45,8 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.showInformationMessage('OpenAI API key saved securely.');
 	}));
 
+	// This is the second command, here the user will review their code (particularly the code in the current tab they opened)
+	// Perhaps we can add functionality to allow only selected text to be reviewed
 	context.subscriptions.push(vscode.commands.registerCommand('deep-code-reviewer.reviewCode', async () => {
 		const editor = vscode.window.activeTextEditor;
 		if (!editor) {
@@ -55,7 +62,30 @@ export function activate(context: vscode.ExtensionContext) {
 
 		const code = editor.document.getText();
 
-		vscode.window.showInformationMessage("Reviewing code with AI..")
+		vscode.window.showInformationMessage("Reviewing code with AI..");
+
+		const client = new OpenAI({apiKey});
+
+		const res = await client.chat.completions.create({
+			model : "gpt-5-nano",
+			messages: [
+				{
+					role: "system",
+					content: "You are a code reviewer. Respond with JSON array of issues: [{line, severity, message, suggestion}]"
+
+				},
+				{
+					role: "user",
+					content: "code"
+				}
+			],
+			response_format: {type: "json_object"}
+		});
+
+		const output = res.choices[0].message?.content;
+
+
+
 
 	}));	
 	
