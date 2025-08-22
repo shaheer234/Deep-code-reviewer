@@ -14,6 +14,7 @@ import * as vscode from 'vscode';
 import OpenAI from 'openai';
 import { userInfo } from 'os';
 import { json } from 'stream/consumers';
+import { assertToolCallsAreChatCompletionFunctionToolCalls } from 'openai/lib/parser.mjs';
 
 type ReviewIssue = {
   line: number; // remember number is 1-based
@@ -84,9 +85,53 @@ export function activate(context: vscode.ExtensionContext) {
 
 		const output = res.choices[0].message?.content;
 
+		// here we parse our issues (revieved in JSON format) 
+
+		let issues: ReviewIssue[] = [];
+		try {
+			issues = JSON.parse(output || "[]");
+		} catch (err) 
+			{vscode.window.showErrorMessage("failed to parse GPT response" + output);
+			return;
+		}
+
+		diagCollection.clear(); // this clears the old squiggly lines
+
+		// now its time to actually make our issues reflect on to vs code 
+
+		const diagnostics: vscode.Diagnostic[] = [];
 
 
+		for (const issue of issues) { // for...of gives the object for...in gives the index
+			const lineIndex = issue.line - 1; // issue is an object with line as an attribute 
+			if (lineIndex < 0 || lineIndex >= editor.document.lineCount) {
+				continue;
+			}
 
+			const range = new vscode.Range(
+				lineIndex, 0, // first line index 0 
+				lineIndex, editor.document.lineAt(lineIndex).text.length // to last line index "the lines length"
+			);
+
+			const diagnostic = new vscode.Diagnostic(
+				range, 
+				issue.message,
+				issue.severity === "error"
+				? vscode.DiagnosticSeverity.Error
+				: issue.severity === "warning"
+				? vscode.DiagnosticSeverity.Warning
+				: vscode.DiagnosticSeverity.Information
+			);
+
+			if (issue.suggestion) {
+				diagnostic.code = issue.suggestion;
+			}
+
+			diagnostics.push(diagnostic);
+
+			diagCollection.set(editor.document.uri, diagnostics)
+		}
+	
 	}));	
 	
 	// some notes for the code above 

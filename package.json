@@ -9,10 +9,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:deep-code-reviewer.setOpenAIKey",
-    "onCommand:deep-code-reviewer.reviewCode"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
 
