@@ -14,7 +14,6 @@ import * as vscode from 'vscode';
 import OpenAI from 'openai';
 import { userInfo } from 'os';
 import { json } from 'stream/consumers';
-import { assertToolCallsAreChatCompletionFunctionToolCalls } from 'openai/lib/parser.mjs';
 
 type ReviewIssue = {
   line: number; // remember number is 1-based
@@ -129,7 +128,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			diagnostics.push(diagnostic);
 
-			diagCollection.set(editor.document.uri, diagnostics)
+			diagCollection.set(editor.document.uri, diagnostics);
 		}
 	
 	}));	
