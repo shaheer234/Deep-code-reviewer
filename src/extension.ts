@@ -1,19 +1,7 @@
-// run in terminal to push latest changes to github
-
-// git add .
-// git commit -m "Describe what you changed"
-// or
-// git commit -m "Updated extension.ts"
-// git push origin main
-
-
-
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import OpenAI from 'openai';
-import { userInfo } from 'os';
-import { json } from 'stream/consumers';
 
 type ReviewIssue = {
   line: number; // remember number is 1-based
@@ -29,7 +17,7 @@ let diagCollection: vscode.DiagnosticCollection; // this is how vs code shows er
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
 
-	const diagCollection = vscode.languages.createDiagnosticCollection('deep-code-review'); // creates a collection for all the review problems
+	diagCollection = vscode.languages.createDiagnosticCollection('deep-code-review'); // creates a collection for all the review problems
 	context.subscriptions.push(diagCollection); // this line makes vs code clean it up when reloading/unloading
 
 	// This is the first command, here the user will set the API key
@@ -66,8 +54,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 		const client = new OpenAI({apiKey});
 
+		const model = vscode.workspace
+		.getConfiguration("deepCode")
+		.get<string>("openaiModel") || "gpt-4o-mini";
+
 		const res = await client.chat.completions.create({
-			model : "gpt-5-nano",
+			model,
 			messages: [
 				{
 					role: "system",
@@ -76,7 +68,7 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 				{
 					role: "user",
-					content: "code"
+					content: code
 				}
 			],
 			response_format: {type: "json_object"}
@@ -88,7 +80,15 @@ export function activate(context: vscode.ExtensionContext) {
 
 		let issues: ReviewIssue[] = [];
 		try {
-			issues = JSON.parse(output || "[]");
+			const parsed = JSON.parse(output || "[]");
+			if (Array.isArray(parsed)) {
+				issues = parsed;
+			} else if (parsed.issues && Array.isArray(parsed.issues)) {
+			issues = parsed.issues;
+			} else {
+			vscode.window.showErrorMessage("Unexpected GPT response: " + output);
+			return;
+}
 		} catch (err) 
 			{vscode.window.showErrorMessage("failed to parse GPT response" + output);
 			return;
@@ -127,9 +127,10 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			diagnostics.push(diagnostic);
-
-			diagCollection.set(editor.document.uri, diagnostics);
+			
 		}
+		diagCollection.set(editor.document.uri, diagnostics);
+
 	
 	}));	
 	

@@ -27,7 +27,8 @@
         "deepCode.openaiModel": {
           "type": "string",
           "default": "gpt-5-nano",
-          "description": "OpenAI model name to use (e.g., gpt-4o-mini, gpt-5-nano)."
+          "enum": ["gpt-5-nano", "gpt-4o-mini"],
+          "description": "Select which OpenAI model to use for code reviews."
         }
       } 
     }
