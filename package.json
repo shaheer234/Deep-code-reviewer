@@ -13,12 +13,18 @@
   "main": "./dist/extension.js",
   "contributes": {
 
-    "commands": [
+    "commands": [ 
     { "command": "deep-code-reviewer.setOpenAIKey", 
       "title": "Deep Code Reviewer: Set OpenAI API Key" }, 
 
     { "command": "deep-code-reviewer.reviewCode", 
-      "title": "Deep Code Reviewer: Review Current File" }
+      "title": "Deep Code Reviewer: Review Current File" },
+    
+    { "command": "deep-code-reviewer.showOutput",
+      "title": "Deep Code Reviewer: Show Output"},
+    
+    { "command": "deep-code-reviewer.applyFix",
+      "title": "Apply Fix"}
     ],
 
     "configuration": {

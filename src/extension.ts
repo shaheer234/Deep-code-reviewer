@@ -2,20 +2,33 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import OpenAI from 'openai';
+import { doesNotMatch } from 'assert';
+import { error } from 'console';
+
+// Globally create outputchannel
+let outputChannel: vscode.OutputChannel;
+
 
 type ReviewIssue = {
   line: number; // remember number is 1-based
   severity: 'error' | 'warning' | 'info';
   message: string;
   suggestion?: string; // ? to make it optional 
+  multiLine: boolean;
 };
 
 let diagCollection: vscode.DiagnosticCollection; // this is how vs code shows errors and squiggly lines
 
 
+
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+
+	// globally create an output channel at the start 
+	outputChannel = vscode.window.createOutputChannel("Deep Code Reviewer");
+	context.subscriptions.push(outputChannel);
 
 	diagCollection = vscode.languages.createDiagnosticCollection('deep-code-review'); // creates a collection for all the review problems
 	context.subscriptions.push(diagCollection); // this line makes vs code clean it up when reloading/unloading
@@ -63,8 +76,23 @@ export function activate(context: vscode.ExtensionContext) {
 			messages: [
 				{
 					role: "system",
-					content: "You are a code reviewer. Respond with JSON array of issues: [{line, severity, message, suggestion}]"
+					content: `You are a strict code reviewer.
+					Return a JSON array of issues in this format:
+					[
+						{
+						"line": number,
+						"severity": "error" | "warning" | "info",
+						"message": string,
+						"suggestion": string,
+						"multiLine": boolean
+						}
+					]
 
+					Rules:
+					- If the fix is ONE LINE ONLY → "multiLine": false and "suggestion" is just that line.
+					- If the fix requires MULTIPLE LINES → "multiLine": true and "suggestion" is the full code block (not just one line). 
+					- Do not include explanations in "suggestion". strictly code only or else it will break the quick fix feature`
+										
 				},
 				{
 					role: "user",
@@ -123,13 +151,98 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 
 			if (issue.suggestion) {
-				diagnostic.code = issue.suggestion;
+				if (!issue.multiLine) {
+					diagnostic.code = issue.suggestion;
+				}
 			}
-
+			diagnostic.source = "deep-code-review";
 			diagnostics.push(diagnostic);
 			
 		}
 		diagCollection.set(editor.document.uri, diagnostics);
+
+		// now we will add functionality to show an output window 
+
+		outputChannel.clear();
+		outputChannel.appendLine("🔎 Deep Code Review Results");
+		for (const issue of issues) {
+
+			let severityIcon = ""; 
+			switch (issue.severity) {
+				case "error":
+					severityIcon = "[❌ ERROR]";
+					break;
+				case "warning":
+					severityIcon = "[⚠️ WARNING]";
+					break;
+				case "info":
+					severityIcon = "[INFO]";
+					break;
+				default:
+					severityIcon = "";
+					break;
+
+			}
+
+			outputChannel.appendLine(`\nLine ${issue.line} ${severityIcon} ${issue.message}`);
+
+			if (issue.suggestion) {
+				if (issue.multiLine) {
+					outputChannel.appendLine("   💡 Multi-line Fix:\n" + issue.suggestion);
+				} else {
+					outputChannel.appendLine(`   💡 Suggestion: ${issue.suggestion}`);
+				}
+			}
+		}
+		outputChannel.show(true);
+
+		context.subscriptions.push(vscode.commands.registerCommand("deep-code-reviewer.showOutput", async () => {
+			outputChannel.show(true);
+		}));
+
+		// for formatting purposes lets add a lightbulb before the GPT suggestion 
+
+		vscode.languages.registerCodeActionsProvider("*", {
+			provideCodeActions(document,range,context,token) {
+				return context.diagnostics
+				.filter(d => d.source === "deep-code-review")
+				.map(d => {
+					if (typeof d.code === 'string') {
+					const action = new vscode.CodeAction(`Apply fix: ${d.code}`, vscode.CodeActionKind.QuickFix);
+					action.command = {
+						command: "deep-code-reviewer.applyFix",
+						title: "Apply Fix",
+						arguments: [document, d]
+					};
+					return action;
+					}
+					return null;
+				})
+				.filter(Boolean) as vscode.CodeAction[];
+			}
+			
+		});
+
+		// now we will register the apply fix command 
+
+		vscode.commands.registerCommand("deep-code-reviewer.applyFix", 
+			async(document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
+			const editor = vscode.window.showTextDocument(document);
+
+			const fix = typeof diagnostic.code === "string" ? diagnostic.code : null;
+			if (!fix) {
+				vscode.window.showErrorMessage("No fix suggestion available.");
+				return;
+			}
+			const lineNum = diagnostic.range.start.line;
+			const lineRange = document.lineAt(lineNum).range;
+
+			(await editor).edit(editBuilder => {
+				editBuilder.replace(lineRange, fix);
+			});
+
+
+		});
 
 	
 	}));	
@@ -137,6 +250,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// some notes for the code above 
 	// async allows us to use await
 	// we use await becase a user takes time to enter a password
+
+
 
 	// Use the console to output diagnostic information (console.log) and errors (console.error)
 	// This line of code will only be executed once when your extension is activated
