@@ -19,12 +19,12 @@
    
 3. **Set your OpenAI API key**
 
-    Command Palette → Deep Code Reviewer: Set OpenAI API Key  
+    Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) → Deep Code Reviewer: Set OpenAI API Key  
     (stored securely via VS Code Secrets)
 
 4. **Run a review**
 
-    Command Palette → Deep Code Reviewer: Review Current File  
+    Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) → Deep Code Reviewer: Review Current File  
     You’ll see findings inline and in the Problems panel. Use Apply Fix when available.
 
 
@@ -57,5 +57,37 @@ Or set it in `settings.json`:
 
 - **No diagnostics appear** → Ensure API key is set via `Set OpenAI API Key`.  
 - **Unstable output** → Extension enforces temperature=0, retry if model responds with invalid JSON.  
-- **Slow responses** → Switch to a smaller file or use `gpt-4o-mini`.  
+- **Slow responses** → Switch to a smaller file or use `gpt-4o-mini`.
+
+## 📸 Screenshots & Visuals
+
+A quick look at Deep Code Reviewer in action inside VS Code:
+
+### 🔎 Inline Diagnostics & Problems Panel
+LLM-detected issues are surfaced as squiggles inline and listed in the **Problems** panel.
+
+![Diagnostics & Problems Panel](https://github.com/user-attachments/assets/503ae251-2e0e-4c19-976d-f7cb1545e62b)
+
+---
+
+### 💡 One-Click Fixes
+Quickly resolve issues with a single click using **Code Actions**.
+
+![Quick Fix Demo](https://github.com/user-attachments/assets/96816700-0208-4cf9-aa0b-3b8d6431a349)
+
+---
+
+### 📜 Output Channel
+See detailed explanations, structured JSON, and logs in the **Deep Code Reviewer** output channel.
+<img width="905" height="348" alt="Pasted Graphic 3" src="https://github.com/user-attachments/assets/dcbb90d6-b1eb-4ddc-ae38-b3509eba853f" />
+
+---
+
+### 🧭 Command Palette
+Run reviews on demand via **Command Palette** (`Ctrl+Shift+P` / `Cmd+Shift+P`).
+
+<img width="609" height="109" alt="Deep Code Reviewer Review Current File" src="https://github.com/user-attachments/assets/549246ff-d956-456e-b133-527207631c97" />
+
+
+
 
