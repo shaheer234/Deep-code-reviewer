@@ -1,13 +1,31 @@
 {
   "name": "deep-code-reviewer",
   "displayName": "deep-code-reviewer",
-  "description": "Your AI-assisted code review partner inside VS Code.",
+  "description": "AI-powered code reviewer for VS Code. Detects errors, warnings, and suggestions with OpenAI GPT models, adds inline squiggles, Problems panel integration, and one-click Quick Fixes.",
+  "repository": {
+  "type": "git",
+  "url": "https://github.com/shaheerimran/deep-code-reviewer.git",
+  "keywords": [
+  "AI",
+  "code review",
+  "linting",
+  "bug detection",
+  "static analysis",
+  "OpenAI",
+  "VS Code",
+  "quick fix",
+  "autofix"]
+  },
+  "license": "MIT",
+  "publisher": "ShaheerImran",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.102.0"
   },
-  "categories": [
-    "Other"
+"categories": [
+  "Programming Languages",
+  "Linters",
+  "Machine Learning"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
@@ -65,6 +83,7 @@
     "eslint": "^9.32.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.2"
+    
   },
   "dependencies": {
     "openai": "^5.12.2"

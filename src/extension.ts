@@ -45,7 +45,9 @@ export function activate(context: vscode.ExtensionContext) {
 			async(document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
 			const editor = vscode.window.showTextDocument(document);
 
-			const fix = typeof diagnostic.code === "string" ? diagnostic.code : null;
+			// const fix = typeof diagnostic.code === "string" ? diagnostic.code : null;
+			const fix = (diagnostic.code as { value: string })?.value || null;
+
 			if (!fix) {
 				vscode.window.showErrorMessage("No fix suggestion available.");
 				return;
@@ -105,7 +107,7 @@ export function activate(context: vscode.ExtensionContext) {
 			messages: [
 				{
 					role: "system",
-					content: `YReturn ONLY a JSON object with a single key "issues". 
+					content: `Return ONLY a JSON object with a single key "issues". 
 					The value of "issues" must be an array of objects, each with:
 					{
 					"line": number,
@@ -120,6 +122,8 @@ export function activate(context: vscode.ExtensionContext) {
 					- Keep suggestions as short as possible while still fixing the issue.
 					- If an undefined function is called, do not stub it with 'pass'. 
   					- Instead, define the function with minimal correct logic that makes the program runnable and preserves intent.
+					- When a function is defined, check its internal safety, not only its call sites. 
+  					- For example, 'divide(a, b)' must guard against 'b == 0' internally, not just flag specific calls.
 					`
                                                                 
                 },
@@ -189,10 +193,14 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const isNotMultifix = isOneLineFix(issue.suggestion);
 
-			if (issue.suggestion && isNotMultifix) {
+			// if (issue.suggestion && isNotMultifix) {
 
-					diagnostic.code = issue.suggestion;
-				}
+			// 		diagnostic.code = issue.suggestion;
+			// 	}
+
+			if (issue.suggestion && isOneLineFix(issue.suggestion)) {
+  				diagnostic.code = { value: issue.suggestion } as any;   // ✅ wrap in object
+}
 			
 			diagnostic.source = "deep-code-review";
 			diagnostics.push(diagnostic);
@@ -250,15 +258,30 @@ export function activate(context: vscode.ExtensionContext) {
 				return context.diagnostics
 				.filter(d => d.source === "deep-code-review")
 				.map(d => {
-					if (typeof d.code === 'string') {
-					const action = new vscode.CodeAction(`Apply fix: ${d.code}`, vscode.CodeActionKind.QuickFix);
-					action.command = {
-						command: "deep-code-reviewer.applyFix",
-						title: "Apply Fix",
-						arguments: [document, d]
-					};
-					return action;
+					// if (typeof d.code === 'string') {
+					// const action = new vscode.CodeAction(`Apply fix: ${d.code}`, vscode.CodeActionKind.QuickFix);
+					// action.command = {
+					// 	command: "deep-code-reviewer.applyFix",
+					// 	title: "Apply Fix",
+					// 	arguments: [document, d]
+					// };
+					// return action;
+					// }
+
+					if (d.code && typeof d.code === "object" && "value" in d.code) {
+						const fix = (d.code as { value: string }).value;  
+						const action = new vscode.CodeAction(
+							`Apply fix: ${fix}`,
+							vscode.CodeActionKind.QuickFix
+						);
+						action.command = {
+							command: "deep-code-reviewer.applyFix",
+							title: "Apply Fix",
+							arguments: [document, d]
+						};
+						return action;
 					}
+
 					return null;
 				})
 				.filter(Boolean) as vscode.CodeAction[];
