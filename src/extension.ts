@@ -124,6 +124,7 @@ export function activate(context: vscode.ExtensionContext) {
   					- Instead, define the function with minimal correct logic that makes the program runnable and preserves intent.
 					- When a function is defined, check its internal safety, not only its call sites. 
   					- For example, 'divide(a, b)' must guard against 'b == 0' internally, not just flag specific calls.
+					- preserve the nature of the function (eg, recursive, iterative, etc.)
 					`
                                                                 
                 },
