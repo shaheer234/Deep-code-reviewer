@@ -1,9 +1,9 @@
 # Deep code reviewer
  
-> Your AI-assisted code review partner inside VS Code.  
-> Marketplace: https://marketplace.visualstudio.com/items?itemName=ShaheerImran.deep-code-reviewer
+ Your AI-assisted code review partner inside VS Code.  
+> **Marketplace:** [Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ShaheerImran.deep-code-reviewer)
 
-## Key Features
+## ✨ Key Features
 
 - LLM-powered analysis (OpenAI gpt-5-mini / gpt-4o-mini) finds bugs, logic errors, and risky patterns.
 - Inline diagnostics using the VS Code Diagnostics API (squiggles + Problems panel).
@@ -14,18 +14,18 @@
 
 1. **Install the extension**
 
-> From Marketplace: open VS Code → Extensions → search “deep-code-reviewer” → Install  
-> or click: https://marketplace.visualstudio.com/items?itemName=ShaheerImran.deep-code-reviewer
+    From Marketplace: open VS Code → Extensions → search “deep-code-reviewer” → Install  
+    Or click: **Marketplace:** [Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ShaheerImran.deep-code-reviewer)
+   
+3. **Set your OpenAI API key**
 
-2. **Set your OpenAI API key**
+    Command Palette → Deep Code Reviewer: Set OpenAI API Key  
+    (stored securely via VS Code Secrets)
 
-> Command Palette → Deep Code Reviewer: Set OpenAI API Key  
-> (stored securely via VS Code Secrets)
+4. **Run a review**
 
-3. **Run a review**
-
-> Command Palette → Deep Code Reviewer: Review Current File  
-> You’ll see findings inline and in the Problems panel. Use Apply Fix when available.
+    Command Palette → Deep Code Reviewer: Review Current File  
+    You’ll see findings inline and in the Problems panel. Use Apply Fix when available.
 
 
 ## 🧩 Commands
