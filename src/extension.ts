@@ -31,15 +31,15 @@ export function activate(context: vscode.ExtensionContext) {
 	// This is the first command, here the user will set the API key
 
 	// The line below registers a command in the palette (opened by ctrl/command + shift + p)
-	context.subscriptions.push(vscode.commands.registerCommand('deep-code-reviewer.setOpenAIKey', async () => {
-		const key = await vscode.window.showInputBox({
-			prompt: 'Enter your OpenAI API key',
-			password: true
-		});
-		if (!key) {return;}
-		await context.secrets.store('deepCode.openai.apiKey', key);
-		vscode.window.showInformationMessage('OpenAI API key saved securely.');
-	}));
+	// context.subscriptions.push(vscode.commands.registerCommand('deep-code-reviewer.setOpenAIKey', async () => {
+	// 	const key = await vscode.window.showInputBox({
+	// 		prompt: 'Enter your OpenAI API key',
+	// 		password: true
+	// 	});
+	// 	if (!key) {return;}
+	// 	await context.secrets.store('deepCode.openai.apiKey', key);
+	// 	vscode.window.showInformationMessage('OpenAI API key saved securely.');
+	// }));
 
 			vscode.commands.registerCommand("deep-code-reviewer.applyFix", 
 			async(document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
@@ -82,11 +82,13 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const apiKey = await context.secrets.get('deepCode.openai.apiKey');
-		if (!apiKey) {
-    		vscode.window.showErrorMessage('Please set your OpenAI API key first.');
-    		return;
-		}
+		// const apiKey = await context.secrets.get('deepCode.openai.apiKey');
+		// if (!apiKey) {
+    	// 	vscode.window.showErrorMessage('Please set your OpenAI API key first.');
+    	// 	return;
+		// }
+
+		const apiKey = 
 
 		const code = editor.document.getText();
 

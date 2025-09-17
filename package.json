@@ -32,8 +32,6 @@
   "contributes": {
 
     "commands": [ 
-    { "command": "deep-code-reviewer.setOpenAIKey", 
-      "title": "Deep Code Reviewer: Set OpenAI API Key" }, 
 
     { "command": "deep-code-reviewer.reviewCode", 
       "title": "Deep Code Reviewer: Review Current File" },
@@ -46,15 +44,7 @@
     ],
 
     "configuration": {
-      "title": "Deep Code Reviewer",
-      "properties": {
-        "deepCode.openaiModel": {
-          "type": "string",
-          "default": "gpt-5-mini",
-          "enum": ["gpt-5-mini", "gpt-4o-mini"],
-          "description": "Select which OpenAI model to use for code reviews."
-        }
-      } 
+      "title": "Deep Code Reviewer"
     }
   },
   "scripts": {
