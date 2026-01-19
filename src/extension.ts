@@ -67,6 +67,20 @@ let outputChannel: vscode.OutputChannel;
 let diagCollection: vscode.DiagnosticCollection;
 
 /**
+ * Attempt metadata for self-correction loop visualization
+ */
+interface ReviewAttempt {
+	attempt: number;
+	valid: boolean;
+	errors: string[];
+	tokens: {
+		prompt_tokens: number;
+		completion_tokens: number;
+		total_tokens: number;
+	};
+}
+
+/**
  * Latest review state for the Tree View.
  * We keep the most recent run so the sidebar can show a stable list of findings.
  */
@@ -76,6 +90,9 @@ let latestReviewState:
 			issues: ReviewIssue[];
 			baseLine: number; // 0-based line offset (0 if whole file, selection.start.line if selection)
 			selectionRange?: vscode.Range; // optional, for display context
+			attempts?: ReviewAttempt[]; // Self-correction attempt metadata
+			totalTokens?: number; // Total tokens across all attempts
+			model?: string; // Model used for review
 	  }
 	| null = null;
 
@@ -360,6 +377,187 @@ async function getOrCreateDeviceId(context: vscode.ExtensionContext): Promise<st
 	return deviceId;
 }
 
+// ============================================================================
+// SELF-CORRECTION LOOP FUNCTIONS (For Custom API Key Path)
+// ============================================================================
+
+/**
+ * VALIDATE REVIEW JSON RESPONSE
+ * 
+ * Same validation logic as backend - ensures consistency across both paths
+ * Validates that OpenAI response matches expected schema
+ */
+function validateReviewJson(jsonString: string): { isValid: boolean; errors: string[] } {
+	const errors: string[] = [];
+
+	try {
+		const parsed = JSON.parse(jsonString);
+
+		if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+			errors.push('Response must be a JSON object (not array or primitive)');
+			return { isValid: false, errors };
+		}
+
+		if (!('issues' in parsed)) {
+			errors.push('Missing required key: "issues"');
+			return { isValid: false, errors };
+		}
+
+		if (!Array.isArray(parsed.issues)) {
+			errors.push('"issues" must be an array');
+			return { isValid: false, errors };
+		}
+
+		parsed.issues.forEach((issue: any, index: number) => {
+			const prefix = `Issue #${index + 1}`;
+
+			if (typeof issue !== 'object' || issue === null) {
+				errors.push(`${prefix}: Must be an object`);
+				return;
+			}
+
+			if (!('line' in issue)) {
+				errors.push(`${prefix}: Missing required field "line"`);
+			} else if (typeof issue.line !== 'number' || issue.line < 1 || !Number.isInteger(issue.line)) {
+				errors.push(`${prefix}: "line" must be a positive integer (>= 1)`);
+			}
+
+			if (!('severity' in issue)) {
+				errors.push(`${prefix}: Missing required field "severity"`);
+			} else if (!['error', 'warning', 'info'].includes(issue.severity)) {
+				errors.push(`${prefix}: "severity" must be "error", "warning", or "info" (got "${issue.severity}")`);
+			}
+
+			if (!('message' in issue)) {
+				errors.push(`${prefix}: Missing required field "message"`);
+			} else if (typeof issue.message !== 'string' || issue.message.trim().length === 0) {
+				errors.push(`${prefix}: "message" must be a non-empty string`);
+			}
+
+			if ('suggestion' in issue && typeof issue.suggestion !== 'string') {
+				errors.push(`${prefix}: "suggestion" must be a string (if provided)`);
+			}
+		});
+
+		if (errors.length > 0) {
+			return { isValid: false, errors };
+		}
+
+		return { isValid: true, errors: [] };
+
+	} catch (parseError: any) {
+		errors.push(`Invalid JSON: ${parseError.message}`);
+		return { isValid: false, errors };
+	}
+}
+
+/**
+ * GENERATE CORRECTION PROMPT
+ * 
+ * When validation fails, generate a prompt that tells the model what's wrong
+ * and asks it to fix ONLY the validation errors
+ */
+function generateCorrectionPrompt(originalPrompt: string, validationErrors: string[]): string {
+	const errorList = validationErrors.map((err, i) => `  ${i + 1}. ${err}`).join('\n');
+
+	return `${originalPrompt}
+
+IMPORTANT: Your previous response failed validation. Please correct it.
+
+Validation Errors:
+${errorList}
+
+Please return a corrected JSON object that fixes ONLY these validation errors.
+- Keep the same structure and content
+- Fix ONLY the fields mentioned in the errors above
+- Do NOT add new issues or change valid ones
+- Ensure all required fields are present and correctly typed`;
+}
+
+/**
+ * CALL OPENAI WITH SELF-CORRECTION LOOP (For Custom API Key Path)
+ * 
+ * Same logic as backend - ensures consistent behavior across both paths
+ * Retries up to 3 times if validation fails
+ */
+async function callOpenAIWithSelfCorrection(
+	client: OpenAI,
+	model: string,
+	systemPrompt: string,
+	code: string
+): Promise<{ content: string | null; attempts: ReviewAttempt[]; success: boolean; totalTokens: number }> {
+	const attempts: ReviewAttempt[] = [];
+	let currentPrompt = systemPrompt;
+	let totalTokens = 0;
+
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		try {
+			const response = await client.chat.completions.create({
+				model,
+				seed: 42,
+				messages: [
+					{ role: 'system', content: currentPrompt },
+					{ role: 'user', content: code }
+				],
+				response_format: { type: 'json_object' }
+			});
+
+			const content = response.choices[0].message?.content || '';
+			const tokens = response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+			totalTokens += tokens.total_tokens;
+
+			const validation = validateReviewJson(content);
+
+			attempts.push({
+				attempt,
+				valid: validation.isValid,
+				errors: validation.errors,
+				tokens: {
+					prompt_tokens: tokens.prompt_tokens,
+					completion_tokens: tokens.completion_tokens,
+					total_tokens: tokens.total_tokens
+				}
+			});
+
+			if (validation.isValid) {
+				return {
+					content,
+					attempts,
+					success: true,
+					totalTokens
+				};
+			}
+
+			if (attempt < 3) {
+				currentPrompt = generateCorrectionPrompt(systemPrompt, validation.errors);
+			}
+
+		} catch (error: any) {
+			attempts.push({
+				attempt,
+				valid: false,
+				errors: [`API error: ${error.message}`],
+				tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+			});
+
+			if (error.status === 429) {
+				break;
+			}
+		}
+	}
+
+	return {
+		content: null,
+		attempts,
+		success: false,
+		totalTokens
+	};
+}
+
+// ============================================================================
+// FREE TIER BACKEND INTEGRATION
+// ============================================================================
+
 /**
  * Calls the free tier backend API to review code
  * 
@@ -390,7 +588,7 @@ async function reviewWithFreeTier(
 	code: string,
 	deviceId: string,
 	model: string
-): Promise<{ content: string | null; usage?: any } | null> {
+): Promise<{ content: string | null; usage?: any; attempts?: ReviewAttempt[]; totalTokens?: number } | null> {
 	try {
 		// Get API URL from settings (or use default)
 		// This allows users to self-host or use a different backend
@@ -431,12 +629,14 @@ async function reviewWithFreeTier(
 		}
 
 		// Parse successful response
-		// Backend returns: { content: "...", usage: {...} }
+		// Backend returns: { content: "...", usage: {...}, attempts: [...], totalTokens: number }
 		const result: any = await response.json();
 
 		return {
 			content: result.content || null,
-			usage: result.usage
+			usage: result.usage,
+			attempts: result.attempts || [],
+			totalTokens: result.totalTokens || 0
 		};
 
 	} catch (error: any) {
@@ -521,8 +721,14 @@ export function activate(context: vscode.ExtensionContext) {
 	/**
 	 * Generate HTML content for the webview panel
 	 * Shows full issue description and proposed fix with proper formatting
+	 * Also displays self-correction loop stats (attempts, tokens, validation log)
 	 */
-	function getIssueDetailsWebviewContent(issue: ReviewIssue, lineNumber: number, uri: vscode.Uri): string {
+	function getIssueDetailsWebviewContent(
+		issue: ReviewIssue,
+		lineNumber: number,
+		uri: vscode.Uri,
+		reviewState: typeof latestReviewState
+	): string {
 		const severityLabel = issue.severity.charAt(0).toUpperCase() + issue.severity.slice(1);
 		const severityColor = issue.severity === 'error' ? '#f48771' : issue.severity === 'warning' ? '#cca700' : '#3794ff';
 		
@@ -605,6 +811,50 @@ export function activate(context: vscode.ExtensionContext) {
 			font-size: 0.9em;
 			margin-top: 10px;
 		}
+		.stats-box {
+			background-color: var(--vscode-textBlockQuote-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			padding: 15px;
+			margin-bottom: 20px;
+		}
+		.stats-row {
+			display: flex;
+			justify-content: space-between;
+			margin-bottom: 8px;
+			font-size: 0.9em;
+		}
+		.stats-label {
+			color: var(--vscode-descriptionForeground);
+		}
+		.stats-value {
+			font-weight: bold;
+			color: var(--vscode-foreground);
+		}
+		.validation-log {
+			margin-top: 15px;
+			padding-top: 15px;
+			border-top: 1px solid var(--vscode-panel-border);
+		}
+		.attempt-item {
+			margin-bottom: 10px;
+			padding: 8px;
+			background-color: var(--vscode-editor-background);
+			border-radius: 3px;
+			font-size: 0.85em;
+		}
+		.attempt-valid {
+			color: #4ec9b0;
+		}
+		.attempt-invalid {
+			color: #f48771;
+		}
+		.attempt-error {
+			margin-left: 20px;
+			margin-top: 4px;
+			color: var(--vscode-descriptionForeground);
+			font-size: 0.9em;
+		}
 	</style>
 </head>
 <body>
@@ -613,6 +863,56 @@ export function activate(context: vscode.ExtensionContext) {
 		<span class="severity">${severityLabel}</span>
 		<div class="file-path">${escapeHtml(uri.fsPath)}</div>
 	</div>
+
+	${reviewState?.attempts && reviewState.attempts.length > 0 ? `
+	<div class="section">
+		<div class="section-title">📊 Review Stats</div>
+		<div class="stats-box">
+			${reviewState.model ? `
+			<div class="stats-row">
+				<span class="stats-label">Model:</span>
+				<span class="stats-value">${escapeHtml(reviewState.model)}</span>
+			</div>
+			` : ''}
+			<div class="stats-row">
+				<span class="stats-label">Attempts:</span>
+				<span class="stats-value">${reviewState.attempts.length}/3</span>
+			</div>
+			<div class="stats-row">
+				<span class="stats-label">Status:</span>
+				<span class="stats-value">${reviewState.attempts[reviewState.attempts.length - 1].valid ? '✓ Validated' : '❌ Failed'}</span>
+			</div>
+			${reviewState.totalTokens ? `
+			<div class="stats-row">
+				<span class="stats-label">Total Tokens:</span>
+				<span class="stats-value">${reviewState.totalTokens.toLocaleString()}</span>
+			</div>
+			` : ''}
+			${reviewState.attempts.length > 1 ? `
+			<div class="validation-log">
+				<div style="font-weight: bold; margin-bottom: 10px; color: var(--vscode-textLink-foreground);">Validation Log:</div>
+				${reviewState.attempts.map((attempt, idx) => `
+				<div class="attempt-item">
+					<span class="${attempt.valid ? 'attempt-valid' : 'attempt-invalid'}">
+						${attempt.valid ? '✓' : '❌'} Attempt ${attempt.attempt}: ${attempt.valid ? 'Valid ✓' : 'Invalid'}
+					</span>
+					${attempt.errors && attempt.errors.length > 0 ? `
+					<div class="attempt-error">
+						${attempt.errors.map(err => `• ${escapeHtml(err)}`).join('<br>')}
+					</div>
+					` : ''}
+					${attempt.tokens && attempt.tokens.total_tokens > 0 ? `
+					<div class="attempt-error" style="margin-top: 4px;">
+						Tokens: ${attempt.tokens.total_tokens.toLocaleString()} (${attempt.tokens.prompt_tokens} input + ${attempt.tokens.completion_tokens} output)
+					</div>
+					` : ''}
+				</div>
+				`).join('')}
+			</div>
+			` : ''}
+		</div>
+	</div>
+	` : ''}
 
 	<div class="section">
 		<div class="section-title">📝 Description</div>
@@ -665,7 +965,7 @@ export function activate(context: vscode.ExtensionContext) {
 			// Create or update webview panel
 			if (issueDetailsPanel) {
 				// Update existing panel
-				issueDetailsPanel.webview.html = getIssueDetailsWebviewContent(issue, line1Based, uri);
+				issueDetailsPanel.webview.html = getIssueDetailsWebviewContent(issue, line1Based, uri, state);
 				issueDetailsPanel.title = `Issue Details - Line ${line1Based}`;
 				issueDetailsPanel.reveal();
 			} else {
@@ -680,7 +980,7 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 				);
 
-				issueDetailsPanel.webview.html = getIssueDetailsWebviewContent(issue, line1Based, uri);
+				issueDetailsPanel.webview.html = getIssueDetailsWebviewContent(issue, line1Based, uri, state);
 
 				// Clean up when panel is closed
 				issueDetailsPanel.onDidDispose(() => {
@@ -978,62 +1278,59 @@ export function activate(context: vscode.ExtensionContext) {
 				const client = new OpenAI({ apiKey });
 
 				/**
-				 * PROMPT ENGINEERING:
+				 * SELF-CORRECTION LOOP:
 				 * 
-				 * We use a detailed system prompt to ensure:
-				 * - Consistent JSON output format
-				 * - Proper severity classification
-				 * - Actionable fix suggestions
-				 * - Minimal, focused fixes (not entire function rewrites)
+				 * We wrap the OpenAI call with automatic retry logic:
+				 * 1. Call OpenAI API
+				 * 2. Validate JSON response structure
+				 * 3. If invalid → retry with correction prompt (up to 3 attempts)
+				 * 4. Return result + attempt metadata
 				 * 
-				 * DETERMINISTIC SETTINGS:
-				 * - seed: 42 (deterministic results - same input = same output)
-				 * Note: Some newer models (e.g., gpt-5-mini) don't support temperature: 0
-				 * - response_format: json_object (forces valid JSON)
-				 * 
-				 * WHY DETERMINISTIC?
-				 * - Consistent results (user runs review twice, gets same issues)
-				 * - Easier to debug (reproducible)
-				 * - Better UX (no random variations)
+				 * WHY SELF-CORRECTION?
+				 * - Models sometimes return invalid JSON or wrong structure
+				 * - Prevents user-facing errors ("invalid response" messages)
+				 * - Shows production-ready reliability engineering
+				 * - Demonstrates AI engineering best practices
 				 */
-				const res = await client.chat.completions.create({
-					model,
-					// Note: Some models (e.g., gpt-5-mini) don't support temperature: 0
-					// Using seed: 42 for determinism instead
-					seed: 42,        // Deterministic results (same input = same output)
-					messages: [
-						{
-							role: "system",
-							content: `Return ONLY a JSON object with a single key "issues". 
-					The value of "issues" must be an array of objects, each with:
-					{
-					"line": number,
-					"severity": "error" | "warning" | "info",
-					"message": string,
-					"suggestion": string
-					}
-					
-					Notes:
-					- "suggestion" must be strictly valid code only (no explanations, no prose, no markdown).
-					- Do NOT return the entire function unless the fix genuinely requires redefining the whole function.
-					- Keep suggestions as short as possible while still fixing the issue.
-					- If an undefined function is called, do not stub it with 'pass'. 
-  					- Instead, define the function with minimal correct logic that makes the program runnable and preserves intent.
-					- When a function is defined, check its internal safety, not only its call sites. 
-  					- For example, 'divide(a, b)' must guard against 'b == 0' internally, not just flag specific calls.
-					- preserve the nature of the function (eg, recursive, iterative, etc.)
-					`
-						},
+				const systemPrompt = `Return ONLY a JSON object with a single key "issues". 
+The value of "issues" must be an array of objects, each with:
+{
+  "line": number,
+  "severity": "error" | "warning" | "info",
+  "message": string,
+  "suggestion": string
+}
 
-						{
-							role: "user",
-							content: code
-						}
-					],
-					response_format: { type: "json_object" } // Force JSON output
-				});
+Notes:
+- "suggestion" must be strictly valid code only (no explanations, no prose, no markdown).
+- Do NOT return the entire function unless the fix genuinely requires redefining the whole function.
+- Keep suggestions as short as possible while still fixing the issue.
+- If an undefined function is called, do not stub it with 'pass'. 
+- Instead, define the function with minimal correct logic that makes the program runnable and preserves intent.
+- When a function is defined, check its internal safety, not only its call sites. 
+- For example, 'divide(a, b)' must guard against 'b == 0' internally, not just flag specific calls.
+- preserve the nature of the function (eg, recursive, iterative, etc.)`;
 
-				output = res.choices[0].message?.content || null;
+				const result = await callOpenAIWithSelfCorrection(client, model, systemPrompt, code);
+
+				if (!result.success) {
+					vscode.window.showErrorMessage(
+						`Review failed after ${result.attempts.length} attempts. ` +
+						`The AI model returned invalid responses. Please try again.`
+					);
+					return;
+				}
+
+				output = result.content;
+				// Store attempts metadata for webview display
+				latestReviewState = latestReviewState || {
+					uri: editor.document.uri,
+					issues: [],
+					baseLine: 0
+				};
+				latestReviewState.attempts = result.attempts;
+				latestReviewState.totalTokens = result.totalTokens;
+				latestReviewState.model = model;
 			} catch (error: any) {
 				vscode.window.showErrorMessage(`Review failed: ${error.message}`);
 				return;
@@ -1052,6 +1349,19 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			output = result.content;
+			// Store attempts metadata for webview display (backend already did self-correction)
+			latestReviewState = latestReviewState || {
+				uri: editor.document.uri,
+				issues: [],
+				baseLine: 0
+			};
+			if (result.attempts) {
+				latestReviewState.attempts = result.attempts;
+			}
+			if (result.totalTokens) {
+				latestReviewState.totalTokens = result.totalTokens;
+			}
+			latestReviewState.model = model;
 		}
 
 		// ====================================================================
@@ -1105,11 +1415,15 @@ export function activate(context: vscode.ExtensionContext) {
 		const baseLine = hasSelection ? selection.start.line : 0;
 
 		// Update Tree View state so the sidebar reflects the latest review
+		// Preserve attempts metadata if it was already set (from self-correction loop)
 		latestReviewState = {
 			uri: editor.document.uri,
 			issues,
 			baseLine,
-			selectionRange: hasSelection ? new vscode.Range(selection.start, selection.end) : undefined
+			selectionRange: hasSelection ? new vscode.Range(selection.start, selection.end) : undefined,
+			attempts: latestReviewState?.attempts,
+			totalTokens: latestReviewState?.totalTokens,
+			model: latestReviewState?.model
 		};
 		findingsProvider?.refresh();
 
