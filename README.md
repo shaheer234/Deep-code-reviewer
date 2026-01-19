@@ -3,6 +3,43 @@
  Your AI-assisted code review partner inside VS Code.  
 > **Marketplace:** [Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ShaheerImran.deep-code-reviewer)
 
+## 🏗️ Architecture
+
+Deep Code Reviewer uses a **dual-mode architecture** to balance user experience and cost control:
+
+### **Mode 1: Free Tier** (Default)
+- **No API key required** - Lower friction for new users
+- **Rate limited** - 10 reviews/day per device (prevents abuse)
+- **Backend proxy** - Your backend handles OpenAI calls and rate limiting
+- **Cost controlled** - Uses cheaper models (gpt-4o-mini) by default
+
+### **Mode 2: Custom API Key** (Optional)
+- **Unlimited reviews** - Use your own OpenAI API key
+- **Direct to OpenAI** - Code never touches our backend (better privacy)
+- **Model choice** - Use any OpenAI model you prefer
+- **No rate limits** - Review as much as you want
+
+### **How It Works**
+
+```
+┌─────────────────┐
+│  VS Code        │
+│  Extension      │
+└────────┬────────┘
+         │
+         ├─── Has API Key? ──── YES ────► OpenAI API (Direct)
+         │
+         └─── NO ────► Backend API ────► OpenAI API (Proxy)
+                            │
+                            └─── Rate Limiter (10/day)
+```
+
+**Key Design Decisions:**
+- **Device-based tracking**: Each VS Code installation gets a unique UUID (no authentication needed)
+- **Seamless switching**: Extension automatically uses free tier or custom key
+- **VS Code native**: Uses Diagnostics API (squiggles) and Code Actions (quick fixes)
+- **Selection support**: Review entire file OR just selected text (saves tokens/cost)
+
 ## ✨ Key Features
 
 - LLM-powered analysis (OpenAI gpt-5-mini / gpt-4o-mini) finds bugs, logic errors, and risky patterns.
