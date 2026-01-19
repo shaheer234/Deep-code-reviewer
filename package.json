@@ -53,6 +53,11 @@
           "default": "gpt-5-mini",
           "enum": ["gpt-5-mini", "gpt-4o-mini"],
           "description": "Select which OpenAI model to use for code reviews."
+        },
+        "deepCode.freeTierApiUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Backend API URL for free tier reviews. Leave empty to use default. Only change if hosting your own backend."
         }
       } 
     }
