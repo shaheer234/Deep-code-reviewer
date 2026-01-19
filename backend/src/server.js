@@ -488,8 +488,9 @@ Notes:
 		 */
 		const response = await openai.chat.completions.create({
 			model,
-			temperature: 0, // Deterministic results (same input = same output)
-			seed: 42,       // Extra determinism
+			// Note: Some models (e.g., gpt-5-mini) don't support temperature: 0
+			// Using seed: 42 for determinism instead
+			seed: 42,       // Deterministic results (same input = same output)
 			messages: [
 				{ role: 'system', content: systemPrompt },
 				{ role: 'user', content: code }

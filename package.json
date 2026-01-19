@@ -27,13 +27,20 @@
   "Linters",
   "Machine Learning"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:deepCodeReviewer.findings",
+    "onCommand:deep-code-reviewer.reviewCode",
+    "onCommand:deep-code-reviewer.setOpenAIKey"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
 
     "commands": [ 
     { "command": "deep-code-reviewer.setOpenAIKey", 
       "title": "Deep Code Reviewer: Set OpenAI API Key" }, 
+
+    { "command": "deep-code-reviewer.clearOpenAIKey", 
+      "title": "Deep Code Reviewer: Clear OpenAI API Key" },
 
     { "command": "deep-code-reviewer.reviewCode", 
       "title": "Deep Code Reviewer: Review Current File" },
@@ -42,8 +49,36 @@
       "title": "Deep Code Reviewer: Show Output"},
     
     { "command": "deep-code-reviewer.applyFix",
-      "title": "Apply Fix"}
+      "title": "Apply Fix"},
+
+    { "command": "deep-code-reviewer.openIssue",
+      "title": "Deep Code Reviewer: Open Issue",
+      "icon": "$(go-to-file)"}
     ],
+
+    "views": {
+      "explorer": [
+        {
+          "id": "deepCodeReviewer.findings",
+          "name": "Deep Code Reviewer"
+        }
+      ]
+    },
+
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "deep-code-reviewer.openIssue",
+          "when": "view == deepCodeReviewer.findings && viewItem == deepCodeReviewer.issue",
+          "group": "navigation"
+        },
+        {
+          "command": "deep-code-reviewer.applyFix",
+          "when": "view == deepCodeReviewer.findings && viewItem == deepCodeReviewer.issue && deepCodeReviewer.hasFix",
+          "group": "inline"
+        }
+      ]
+    },
 
     "configuration": {
       "title": "Deep Code Reviewer",

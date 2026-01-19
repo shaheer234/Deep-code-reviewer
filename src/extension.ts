@@ -66,6 +66,19 @@ let outputChannel: vscode.OutputChannel;
  */
 let diagCollection: vscode.DiagnosticCollection;
 
+/**
+ * Latest review state for the Tree View.
+ * We keep the most recent run so the sidebar can show a stable list of findings.
+ */
+let latestReviewState:
+	| {
+			uri: vscode.Uri;
+			issues: ReviewIssue[];
+			baseLine: number; // 0-based line offset (0 if whole file, selection.start.line if selection)
+			selectionRange?: vscode.Range; // optional, for display context
+	  }
+	| null = null;
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -101,6 +114,193 @@ type ReviewIssue = {
 	message: string; // Human-readable description of the issue
 	suggestion?: string; // Optional code fix (only for one-liners that can be auto-applied)
 };
+
+// ============================================================================
+// TREE VIEW (Sidebar UI)
+// ============================================================================
+
+/**
+ * Tree item types:
+ * - Group nodes (Errors / Warnings / Info)
+ * - Issue nodes (expandable if has fix, click to jump to file+line)
+ * - Fix nodes (shown when issue is expanded)
+ */
+type FindingsNode =
+	| { kind: 'actionsRoot' }
+	| { kind: 'action'; id: ActionId; label: string; description?: string }
+	| { kind: 'group'; label: string; severity: ReviewIssue['severity']; count: number }
+	| { kind: 'issue'; severity: ReviewIssue['severity']; issue: ReviewIssue; actualLine1Based: number; uri: vscode.Uri };
+
+type ActionId = 'reviewFile' | 'reviewSelection' | 'setApiKey' | 'clearApiKey' | 'showOutput';
+
+/**
+ * Provides data to the VS Code Tree View contributed in package.json:
+ * - contributes.views.explorer -> id: deepCodeReviewer.findings
+ *
+ * WHY TREE VIEW?
+ * - More \"native\" than an Output Channel for browsing results
+ * - Click to jump between issues quickly
+ * - Scales well when there are many issues
+ */
+class FindingsTreeDataProvider implements vscode.TreeDataProvider<FindingsNode> {
+	private _onDidChangeTreeData = new vscode.EventEmitter<FindingsNode | undefined | void>();
+	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+	refresh() {
+		this._onDidChangeTreeData.fire();
+	}
+
+	getTreeItem(element: FindingsNode): vscode.TreeItem {
+		if (element.kind === 'actionsRoot') {
+			const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Expanded);
+			item.iconPath = new vscode.ThemeIcon('tools');
+			item.contextValue = 'deepCodeReviewer.actionsRoot';
+			return item;
+		}
+
+		if (element.kind === 'action') {
+			const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
+			item.description = element.description;
+			item.contextValue = 'deepCodeReviewer.action';
+
+			// Map action id to commands (all are registered in activate()).
+			const commandById: Record<ActionId, string> = {
+				reviewFile: 'deep-code-reviewer.reviewCode',
+				reviewSelection: 'deep-code-reviewer.reviewCode', // same command, relies on selection
+				setApiKey: 'deep-code-reviewer.setOpenAIKey',
+				clearApiKey: 'deep-code-reviewer.clearOpenAIKey',
+				showOutput: 'deep-code-reviewer.showOutput'
+			};
+
+			item.command = {
+				command: commandById[element.id],
+				title: element.label
+			};
+
+			item.iconPath =
+				element.id === 'reviewFile' || element.id === 'reviewSelection'
+					? new vscode.ThemeIcon('search')
+					: element.id === 'showOutput'
+						? new vscode.ThemeIcon('output')
+						: element.id === 'clearApiKey'
+							? new vscode.ThemeIcon('trash')
+							: new vscode.ThemeIcon('key');
+
+			return item;
+		}
+
+		if (element.kind === 'group') {
+			const item = new vscode.TreeItem(`${element.label} (${element.count})`, vscode.TreeItemCollapsibleState.Expanded);
+			item.contextValue = 'deepCodeReviewer.group';
+			return item;
+		}
+
+		// Issue node - flat list, no expansion
+		if (element.kind === 'issue') {
+			const line = element.actualLine1Based;
+		
+			// Truncate label to ~60 chars to prevent Tree View truncation
+			// Full details shown in webview panel when clicked
+			const maxLabelLength = 60;
+			const truncatedMessage = element.issue.message.length > maxLabelLength
+				? element.issue.message.substring(0, maxLabelLength - 3) + '...'
+				: element.issue.message;
+			
+			// Issues are not expandable - clicking opens webview panel
+			const item = new vscode.TreeItem(
+				`Line ${line}: ${truncatedMessage}`,
+				vscode.TreeItemCollapsibleState.None
+			);
+			
+			// Tooltip shows full message
+			item.tooltip = `Line ${line}: ${element.issue.message}`;
+			
+			// Show hint if fix is available
+			if (element.issue.suggestion) {
+				item.description = '💡 Click for details';
+			}
+
+		// Use the same icon language as VS Code diagnostics
+		item.iconPath =
+			element.severity === 'error'
+				? new vscode.ThemeIcon('error')
+				: element.severity === 'warning'
+					? new vscode.ThemeIcon('warning')
+					: new vscode.ThemeIcon('info');
+
+		// Clicking opens the issue location
+		item.command = {
+			command: 'deep-code-reviewer.openIssue',
+			title: 'Open Issue',
+			arguments: [element.uri, line]
+		};
+
+		// Context menu visibility
+		item.contextValue = 'deepCodeReviewer.issue';
+
+			return item;
+		}
+
+		// Fallback (should never happen)
+		return new vscode.TreeItem('Unknown', vscode.TreeItemCollapsibleState.None);
+	}
+
+	getChildren(element?: FindingsNode): FindingsNode[] {
+		if (!element) {
+			// Top-level always shows an \"Actions\" section, even before first review.
+			const topLevel: FindingsNode[] = [{ kind: 'actionsRoot' }];
+
+			// If no review has happened yet, we only show Actions.
+			if (!latestReviewState) {
+				return topLevel;
+			}
+
+			const { issues } = latestReviewState;
+			const errors = issues.filter(i => i.severity === 'error');
+			const warnings = issues.filter(i => i.severity === 'warning');
+			const infos = issues.filter(i => i.severity === 'info');
+
+			const nodes: FindingsNode[] = [...topLevel];
+			if (errors.length) { nodes.push({ kind: 'group', label: 'Errors', severity: 'error', count: errors.length }); }
+			if (warnings.length) { nodes.push({ kind: 'group', label: 'Warnings', severity: 'warning', count: warnings.length }); }
+			if (infos.length) { nodes.push({ kind: 'group', label: 'Info', severity: 'info', count: infos.length }); }
+			return nodes;
+		}
+
+		// Actions section
+		if (element.kind === 'actionsRoot') {
+			const actions: FindingsNode[] = [
+				{ kind: 'action', id: 'reviewFile', label: 'Review current file', description: 'Runs AI review on the active file' },
+				{ kind: 'action', id: 'reviewSelection', label: 'Review selection', description: 'Select code first to review only that snippet' },
+				{ kind: 'action', id: 'showOutput', label: 'Show output', description: 'Opens the Deep Code Reviewer output channel' },
+				{ kind: 'action', id: 'setApiKey', label: 'Set / update OpenAI API key', description: 'Use your own key for unlimited reviews' },
+				{ kind: 'action', id: 'clearApiKey', label: 'Clear OpenAI API key', description: 'Switch back to free tier mode' }
+			];
+			return actions;
+		}
+
+		if (!latestReviewState) {
+			return [];
+		}
+
+		const { uri, issues, baseLine } = latestReviewState;
+
+		// Group node: list issues of that severity
+		if (element.kind === 'group') {
+			return issues
+				.filter(i => i.severity === element.severity)
+				.map(i => {
+					const actualLine1Based = baseLine + i.line; // baseLine is 0-based, issue.line is 1-based
+					return { kind: 'issue', severity: i.severity, issue: i, actualLine1Based, uri } satisfies FindingsNode;
+				});
+		}
+
+		// Issues are not expandable - clicking opens webview panel
+		return [];
+	}
+}
+
+let findingsProvider: FindingsTreeDataProvider | null = null;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -153,11 +353,10 @@ function isOneLineFix(s?: string): boolean {
  */
 async function getOrCreateDeviceId(context: vscode.ExtensionContext): Promise<string> {
 	let deviceId = await context.globalState.get<string>('deepCode.deviceId');
-	if (!deviceId) {
-		deviceId = randomUUID(); // Generate a unique identifier
-		await context.globalState.update('deepCode.deviceId', deviceId);
-		outputChannel.appendLine(`Device ID created: ${deviceId}`);
-	}
+		if (!deviceId) {
+			deviceId = randomUUID(); // Generate a unique identifier
+			await context.globalState.update('deepCode.deviceId', deviceId);
+		}
 	return deviceId;
 }
 
@@ -198,9 +397,6 @@ async function reviewWithFreeTier(
 		const config = vscode.workspace.getConfiguration("deepCode");
 		const apiUrl = config.get<string>("freeTierApiUrl") || DEFAULT_FREE_TIER_API_URL;
 
-		outputChannel.appendLine(`Using free tier API: ${apiUrl}`);
-		outputChannel.appendLine(`Device ID: ${deviceId}`);
-
 		// HTTP POST to backend
 		// Headers include device ID for rate limiting
 		const response = await fetch(`${apiUrl}/v1/review`, {
@@ -238,18 +434,12 @@ async function reviewWithFreeTier(
 		// Backend returns: { content: "...", usage: {...} }
 		const result: any = await response.json();
 
-		// Log usage info to output channel (helps users track their quota)
-		if (result.usage) {
-			outputChannel.appendLine(`📊 Usage: ${result.usage.used}/${result.usage.limit} reviews used today`);
-		}
-
 		return {
 			content: result.content || null,
 			usage: result.usage
 		};
 
 	} catch (error: any) {
-		outputChannel.appendLine(`❌ Free tier API error: ${error.message}`);
 		vscode.window.showErrorMessage(`Free tier review failed: ${error.message}. Try setting your own API key.`);
 		return null;
 	}
@@ -310,6 +500,197 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(diagCollection); // Auto-cleanup on deactivation
 
 	// ========================================================================
+	// TREE VIEW REGISTRATION (Sidebar Findings)
+	// ========================================================================
+
+	/**
+	 * Register the Tree View provider so results appear in the Explorer sidebar.
+	 * The view id must match package.json -> contributes.views.explorer[].id
+	 */
+	findingsProvider = new FindingsTreeDataProvider();
+	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider('deepCodeReviewer.findings', findingsProvider)
+	);
+
+	/**
+	 * Webview panel for showing full issue details
+	 * Stores the current panel so we can update it when clicking different issues
+	 */
+	let issueDetailsPanel: vscode.WebviewPanel | undefined = undefined;
+
+	/**
+	 * Generate HTML content for the webview panel
+	 * Shows full issue description and proposed fix with proper formatting
+	 */
+	function getIssueDetailsWebviewContent(issue: ReviewIssue, lineNumber: number, uri: vscode.Uri): string {
+		const severityLabel = issue.severity.charAt(0).toUpperCase() + issue.severity.slice(1);
+		const severityColor = issue.severity === 'error' ? '#f48771' : issue.severity === 'warning' ? '#cca700' : '#3794ff';
+		
+		// Escape HTML to prevent XSS
+		const escapeHtml = (text: string) => {
+			return text
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/"/g, '&quot;')
+				.replace(/'/g, '&#039;');
+		};
+
+		const messageHtml = escapeHtml(issue.message).replace(/\n/g, '<br>');
+		const fixHtml = issue.suggestion ? escapeHtml(issue.suggestion).replace(/\n/g, '<br>') : '<em>No fix suggestion available</em>';
+
+		return `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Issue Details</title>
+	<style>
+		body {
+			font-family: var(--vscode-font-family);
+			font-size: var(--vscode-font-size);
+			color: var(--vscode-foreground);
+			background-color: var(--vscode-editor-background);
+			padding: 20px;
+			line-height: 1.6;
+		}
+		.header {
+			border-bottom: 2px solid ${severityColor};
+			padding-bottom: 10px;
+			margin-bottom: 20px;
+		}
+		.line-number {
+			font-weight: bold;
+			font-size: 1.2em;
+			color: ${severityColor};
+		}
+		.severity {
+			display: inline-block;
+			padding: 4px 8px;
+			border-radius: 3px;
+			background-color: ${severityColor};
+			color: white;
+			font-size: 0.9em;
+			margin-left: 10px;
+		}
+		.section {
+			margin-bottom: 25px;
+		}
+		.section-title {
+			font-weight: bold;
+			font-size: 1.1em;
+			margin-bottom: 10px;
+			color: var(--vscode-textLink-foreground);
+		}
+		.description {
+			background-color: var(--vscode-textBlockQuote-background);
+			border-left: 3px solid ${severityColor};
+			padding: 15px;
+			border-radius: 4px;
+			white-space: pre-wrap;
+			word-wrap: break-word;
+		}
+		.fix-code {
+			background-color: var(--vscode-textCodeBlock-background);
+			border: 1px solid var(--vscode-panel-border);
+			padding: 15px;
+			border-radius: 4px;
+			font-family: var(--vscode-editor-font-family);
+			white-space: pre-wrap;
+			word-wrap: break-word;
+			overflow-x: auto;
+		}
+		.file-path {
+			color: var(--vscode-descriptionForeground);
+			font-size: 0.9em;
+			margin-top: 10px;
+		}
+	</style>
+</head>
+<body>
+	<div class="header">
+		<span class="line-number">Line ${lineNumber}</span>
+		<span class="severity">${severityLabel}</span>
+		<div class="file-path">${escapeHtml(uri.fsPath)}</div>
+	</div>
+
+	<div class="section">
+		<div class="section-title">📝 Description</div>
+		<div class="description">${messageHtml}</div>
+	</div>
+
+	<div class="section">
+		<div class="section-title">💡 Proposed Fix</div>
+		<div class="fix-code">${fixHtml}</div>
+	</div>
+</body>
+</html>`;
+	}
+
+	/**
+	 * Command: Open Issue
+	 * 
+	 * Called when user clicks an issue in the Tree View
+	 * - Opens webview panel with full issue details (description + fix)
+	 * - Also jumps to the line in the editor
+	 */
+	context.subscriptions.push(
+		vscode.commands.registerCommand('deep-code-reviewer.openIssue', async (uri: vscode.Uri, line1Based: number) => {
+			// Find the issue details from latestReviewState
+			if (!latestReviewState || latestReviewState.uri.toString() !== uri.toString()) {
+				vscode.window.showErrorMessage('Issue details not available.');
+				return;
+			}
+
+			// latestReviewState is guaranteed non-null here (checked above)
+			const state = latestReviewState;
+			const issue = state.issues.find(i => {
+				const actualLine = state.baseLine + i.line;
+				return actualLine === line1Based;
+			});
+
+			if (!issue) {
+				vscode.window.showErrorMessage('Issue not found.');
+				return;
+			}
+
+			// Jump to line in editor
+			const doc = await vscode.workspace.openTextDocument(uri);
+			const editor = await vscode.window.showTextDocument(doc, { preview: true });
+			const line0Based = Math.max(0, line1Based - 1);
+			const pos = new vscode.Position(line0Based, 0);
+			editor.selection = new vscode.Selection(pos, pos);
+			editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+
+			// Create or update webview panel
+			if (issueDetailsPanel) {
+				// Update existing panel
+				issueDetailsPanel.webview.html = getIssueDetailsWebviewContent(issue, line1Based, uri);
+				issueDetailsPanel.title = `Issue Details - Line ${line1Based}`;
+				issueDetailsPanel.reveal();
+			} else {
+				// Create new panel
+				issueDetailsPanel = vscode.window.createWebviewPanel(
+					'deepCodeReviewerIssueDetails',
+					`Issue Details - Line ${line1Based}`,
+					vscode.ViewColumn.Beside,
+					{
+						enableScripts: false, // No JS needed for now
+						retainContextWhenHidden: true // Keep content when panel is hidden
+					}
+				);
+
+				issueDetailsPanel.webview.html = getIssueDetailsWebviewContent(issue, line1Based, uri);
+
+				// Clean up when panel is closed
+				issueDetailsPanel.onDidDispose(() => {
+					issueDetailsPanel = undefined;
+				}, null, context.subscriptions);
+			}
+		})
+	);
+
+	// ========================================================================
 	// COMMAND: Set OpenAI API Key
 	// ========================================================================
 
@@ -339,6 +720,22 @@ export function activate(context: vscode.ExtensionContext) {
 		// Store in VS Code's secure storage (encrypted)
 		await context.secrets.store('deepCode.openai.apiKey', key);
 		vscode.window.showInformationMessage('OpenAI API key saved securely.');
+	}));
+
+	// ========================================================================
+	// COMMAND: Clear OpenAI API Key
+	// ========================================================================
+
+	/**
+	 * Command: \"Deep Code Reviewer: Clear OpenAI API Key\"
+	 *
+	 * PURPOSE:
+	 * - Lets users switch back to free tier mode (backend) without digging into settings
+	 * - Helpful when they want to stop using their paid key on a shared machine
+	 */
+	context.subscriptions.push(vscode.commands.registerCommand('deep-code-reviewer.clearOpenAIKey', async () => {
+		await context.secrets.delete('deepCode.openai.apiKey');
+		vscode.window.showInformationMessage('OpenAI API key cleared. Using free tier mode (if available).');
 	}));
 
 	// ========================================================================
@@ -396,6 +793,76 @@ export function activate(context: vscode.ExtensionContext) {
 			const newDiagnostics = currDiagnostics.filter(d => d !== diagnostic);
 			diagCollection.set(document.uri, newDiagnostics);
 		});
+
+	/**
+	 * Command: Apply fix from Tree View
+	 * 
+	 * Similar to applyFix but called directly from Tree View fix nodes
+	 * Takes URI, line number, and fix text directly
+	 */
+	context.subscriptions.push(vscode.commands.registerCommand("deep-code-reviewer.applyFixFromTree",
+		async (uri: vscode.Uri, lineNumber: number, fix: string) => {
+			const document = await vscode.workspace.openTextDocument(uri);
+			const editor = await vscode.window.showTextDocument(document);
+
+			// Get the line to replace (lineNumber is 1-based, convert to 0-based)
+			const lineIndex = lineNumber - 1;
+			if (lineIndex < 0 || lineIndex >= document.lineCount) {
+				vscode.window.showErrorMessage("Invalid line number.");
+				return;
+			}
+
+			const original = document.lineAt(lineIndex).text;
+
+			// Preserve indentation (match original code style)
+			const leading = (original.match(/^\s*/)?.[0]) ?? "";
+			const indented = leading + fix.trim(); // Keep one-liner aligned
+
+			// Replace the line
+			await editor.edit(b => b.replace(document.lineAt(lineIndex).range, indented));
+
+			vscode.window.showInformationMessage("Fix applied successfully!");
+			
+			// Refresh Tree View to remove the fixed issue
+			if (latestReviewState && latestReviewState.uri.toString() === uri.toString()) {
+				// Remove the fixed issue from state
+				latestReviewState.issues = latestReviewState.issues.filter(
+					i => !(i.line === lineNumber && i.suggestion === fix)
+				);
+				findingsProvider?.refresh();
+			}
+		}));
+
+	// ========================================================================
+	// CODE ACTIONS PROVIDER (Lightbulb fixes)
+	// ========================================================================
+
+	/**
+	 * Register once at activation (cleaner than registering on every review).
+	 * This provider turns our diagnostics into Quick Fix entries.
+	 */
+	context.subscriptions.push(
+		vscode.languages.registerCodeActionsProvider("*", {
+			provideCodeActions(document, range, context, token) {
+				return context.diagnostics
+					.filter(d => d.source === "deep-code-review")
+					.map(d => {
+						if (d.code && typeof d.code === "object" && "value" in d.code) {
+							const fix = (d.code as { value: string }).value;
+							const action = new vscode.CodeAction(`Apply fix: ${fix}`, vscode.CodeActionKind.QuickFix);
+							action.command = {
+								command: "deep-code-reviewer.applyFix",
+								title: "Apply Fix",
+								arguments: [document, d]
+							};
+							return action;
+						}
+						return null;
+					})
+					.filter(Boolean) as vscode.CodeAction[];
+			}
+		})
+	);
 
 	// ========================================================================
 	// COMMAND: Show Output
@@ -520,8 +987,8 @@ export function activate(context: vscode.ExtensionContext) {
 				 * - Minimal, focused fixes (not entire function rewrites)
 				 * 
 				 * DETERMINISTIC SETTINGS:
-				 * - temperature: 0 (same input = same output)
-				 * - seed: 42 (extra determinism)
+				 * - seed: 42 (deterministic results - same input = same output)
+				 * Note: Some newer models (e.g., gpt-5-mini) don't support temperature: 0
 				 * - response_format: json_object (forces valid JSON)
 				 * 
 				 * WHY DETERMINISTIC?
@@ -531,8 +998,9 @@ export function activate(context: vscode.ExtensionContext) {
 				 */
 				const res = await client.chat.completions.create({
 					model,
-					temperature: 0, // Deterministic results
-					seed: 42,        // Extra determinism
+					// Note: Some models (e.g., gpt-5-mini) don't support temperature: 0
+					// Using seed: 42 for determinism instead
+					seed: 42,        // Deterministic results (same input = same output)
 					messages: [
 						{
 							role: "system",
@@ -568,7 +1036,6 @@ export function activate(context: vscode.ExtensionContext) {
 				output = res.choices[0].message?.content || null;
 			} catch (error: any) {
 				vscode.window.showErrorMessage(`Review failed: ${error.message}`);
-				outputChannel.appendLine(`❌ Custom API key review error: ${error.message}`);
 				return;
 			}
 		}
@@ -620,24 +1087,14 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		// ====================================================================
-		// STEP 4: Clear Old Diagnostics
-		// ====================================================================
-
-		/**
-		 * Clear previous review results before showing new ones
-		 * This prevents stale diagnostics from lingering
-		 */
-		diagCollection.clear();
-
-		// ====================================================================
-		// STEP 5: Convert Issues to VS Code Diagnostics
+		// STEP 4: Calculate Line Offset & Update Tree View
 		// ====================================================================
 
 		/**
 		 * LINE NUMBER MAPPING:
 		 * 
 		 * If reviewing selected text, model returns line numbers relative to snippet
-		 * We need to map these back to actual file line numbers
+		 * We need to map these back to actual file line numbers for Tree View
 		 * 
 		 * Example:
 		 * - File has 100 lines
@@ -645,167 +1102,18 @@ export function activate(context: vscode.ExtensionContext) {
 		 * - Model says "line 3 has an error" (relative to selection start)
 		 * - We map: baseLine (9, 0-based) + issue.line (3, 1-based) = line 12 in file
 		 */
-		const diagnostics: vscode.Diagnostic[] = [];
-
-		// Calculate line offset if reviewing selection
-		// baseLine is 0-based, so if selection starts at line 10, baseLine = 9
 		const baseLine = hasSelection ? selection.start.line : 0;
 
-		for (const issue of issues) {
-			// Convert 1-based model line to 0-based VS Code line, adjusted for selection
-			const lineIndex = baseLine + issue.line - 1;
+		// Update Tree View state so the sidebar reflects the latest review
+		latestReviewState = {
+			uri: editor.document.uri,
+			issues,
+			baseLine,
+			selectionRange: hasSelection ? new vscode.Range(selection.start, selection.end) : undefined
+		};
+		findingsProvider?.refresh();
 
-			// Validate line number (prevent out-of-bounds errors)
-			if (lineIndex < 0 || lineIndex >= editor.document.lineCount) {
-				continue; // Skip invalid line numbers
-			}
-
-			// Create range covering the entire line
-			// VS Code uses Range(startLine, startCol, endLine, endCol)
-			const range = new vscode.Range(
-				lineIndex, 0, // Start of line
-				lineIndex, editor.document.lineAt(lineIndex).text.length // End of line
-			);
-
-			// Create diagnostic (this is what shows the squiggle)
-			const diagnostic = new vscode.Diagnostic(
-				range,
-				issue.message,
-				issue.severity === "error"
-					? vscode.DiagnosticSeverity.Error      // Red squiggle
-					: issue.severity === "warning"
-						? vscode.DiagnosticSeverity.Warning  // Yellow squiggle
-						: vscode.DiagnosticSeverity.Information // Blue squiggle
-			);
-
-			// Store fix suggestion in diagnostic.code (if it's a simple one-liner)
-			// This enables the lightbulb Quick Fix feature
-			if (issue.suggestion && isOneLineFix(issue.suggestion)) {
-				// VS Code expects code actions in this format
-				diagnostic.code = { value: issue.suggestion } as any;
-			}
-
-			// Set source so we can filter our diagnostics
-			diagnostic.source = "deep-code-review";
-			diagnostics.push(diagnostic);
-		}
-
-		// Apply all diagnostics to the document
-		// VS Code will automatically show squiggles and add to Problems panel
-		diagCollection.set(editor.document.uri, diagnostics);
-
-		// ====================================================================
-		// STEP 6: Show Results in Output Channel
-		// ====================================================================
-
-		/**
-		 * OUTPUT CHANNEL FORMATTING:
-		 * 
-		 * We format results nicely with:
-		 * - Emojis for severity (visual scanning)
-		 * - Actual file line numbers (not relative to snippet)
-		 * - Suggestions with clear formatting
-		 * 
-		 * This gives users a readable report they can reference later
-		 */
-		outputChannel.clear();
-		outputChannel.appendLine("🔎 Deep Code Review Results");
-
-		// Show context if reviewing selection
-		if (hasSelection) {
-			outputChannel.appendLine(`(Reviewing selected text: lines ${selection.start.line + 1}-${selection.end.line + 1})`);
-		}
-
-		for (const issue of issues) {
-			// Determine severity icon
-			let severityIcon = "";
-			switch (issue.severity) {
-				case "error":
-					severityIcon = "[❌ ERROR]";
-					break;
-				case "warning":
-					severityIcon = "[⚠️ WARNING]";
-					break;
-				case "info":
-					severityIcon = "[INFO]";
-					break;
-				default:
-					severityIcon = "";
-					break;
-			}
-
-			// Calculate actual file line number (1-based for display)
-			// baseLine is 0-based, issue.line is 1-based relative to snippet
-			// So actual file line (1-based) = baseLine + issue.line
-			const actualFileLine = baseLine + issue.line;
-			outputChannel.appendLine(`\nLine ${actualFileLine} ${severityIcon} ${issue.message}`);
-
-			// Show suggestion if available
-			if (issue.suggestion) {
-				if (!isOneLineFix(issue.suggestion)) {
-					// Multi-line fix: show with formatting
-					outputChannel.appendLine("   💡 Multi-line Fix:\n" + issue.suggestion);
-				} else {
-					// One-liner: show inline
-					outputChannel.appendLine(`   💡 Suggestion: ${issue.suggestion}`);
-				}
-			}
-		}
-		outputChannel.show(true); // Auto-open output channel
-
-		// ====================================================================
-		// STEP 7: Register Code Actions Provider (Lightbulb Fixes)
-		// ====================================================================
-
-		/**
-		 * CODE ACTIONS PROVIDER:
-		 * 
-		 * This enables the lightbulb icon next to diagnostics
-		 * When user clicks it, they see "Apply fix: ..." options
-		 * 
-		 * HOW IT WORKS:
-		 * - VS Code calls provideCodeActions() for each diagnostic
-		 * - We check if diagnostic has a fix (stored in diagnostic.code)
-		 * - If yes, create a CodeAction that calls our applyFix command
-		 * - VS Code shows it in the lightbulb menu
-		 * 
-		 * DESIGN DECISION:
-		 * - Only show fixes for one-liners (safety)
-		 * - Multi-line fixes shown in output channel only
-		 * 
-		 * NOTE: This is registered inside the command (not ideal, but works)
-		 * In production, would register once at activation
-		 */
-		vscode.languages.registerCodeActionsProvider("*", {
-			provideCodeActions(document, range, context, token) {
-				// Filter to only our diagnostics
-				return context.diagnostics
-					.filter(d => d.source === "deep-code-review")
-					.map(d => {
-						// Check if diagnostic has a fix suggestion
-						if (d.code && typeof d.code === "object" && "value" in d.code) {
-							const fix = (d.code as { value: string }).value;
-
-							// Create code action (shows in lightbulb menu)
-							const action = new vscode.CodeAction(
-								`Apply fix: ${fix}`,
-								vscode.CodeActionKind.QuickFix
-							);
-
-							// Wire up command to execute when user clicks
-							action.command = {
-								command: "deep-code-reviewer.applyFix",
-								title: "Apply Fix",
-								arguments: [document, d] // Pass document and diagnostic
-							};
-							return action;
-						}
-
-						return null;
-					})
-					.filter(Boolean) as vscode.CodeAction[];
-			}
-		});
+		// Note: All results are now shown in Tree View - no output channel or diagnostics needed
 	}));
 
 	// ========================================================================
