@@ -1,7 +1,7 @@
 {
   "name": "deep-code-reviewer",
   "displayName": "deep-code-reviewer",
-  "description": "AI-powered code reviewer for VS Code. Detects errors, warnings, and suggestions with OpenAI GPT models, adds inline squiggles, Problems panel integration, and one-click Quick Fixes.",
+  "description": "AI-powered code reviewer for VS Code. Get instant code reviews with Tree View sidebar, rich issue details, self-correction loop, and free tier support. Review entire files or selected code snippets.",
   "repository": {
   "type": "git",
   "url": "https://github.com/shaheerimran/deep-code-reviewer.git",
@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "publisher": "ShaheerImran",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.102.0"
   },
